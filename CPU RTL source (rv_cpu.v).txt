@@ -1,0 +1,137 @@
+// ===========================================================================
+// Single-cycle RV32I CPU (CPI = 1) -- Day 3
+// Base subset : add sub and or slt lw sw beq addi jal
+// 3.1 additions: xor sll srl sra sltu | andi ori xori slti sltiu slli srli srai | lui auipc
+// (also bne blt bge bltu bgeu jalr -- needed by the assembly programs; see 3.5)
+// Memory model: word-addressed LW/SW only (no byte/half access, no misalignment trap)
+// ===========================================================================
+// ---- ALU ------------------------------------------------------------------
+module rv_alu (
+ input wire [31:0] a, b,
+ input wire [3:0] op,
+ output reg [31:0] y
+);
+ localparam ADD=4'd0, SUB=4'd1, AND_=4'd2, OR_=4'd3, XOR_=4'd4,
+ SLL=4'd5, SRL=4'd6, SRA=4'd7, SLT=4'd8, SLTU=4'd9;
+ always @* begin
+ case (op)
+ ADD: y = a + b;
+ SUB: y = a - b;
+ AND_: y = a & b;
+ OR_: y = a | b;
+ XOR_: y = a ^ b;
+ SLL: y = a << b[4:0];
+ SRL: y = a >> b[4:0];
+ SRA: y = $signed(a) >>> b[4:0];
+ SLT: y = {31'b0, $signed(a) < $signed(b)};
+ SLTU: y = {31'b0, a < b};
+ default: y = 32'b0;
+ endcase
+ end
+endmodule
+// ---- Register file: 2 async read ports, 1 sync write port, x0 = 0, NO bypass ----
+// (a bypass would create a combinational loop for e.g. "addi x1,x1,1": wdata depends on rdata)
+module rv_regfile (
+ input wire clk, we,
+ input wire [4:0] ra1, ra2, wa,
+ input wire [31:0] wd,
+ output wire [31:0] rd1, rd2
+);
+ reg [31:0] mem [0:31];
+ integer k; initial for (k=0;k<32;k=k+1) mem[k] = 0;
+ always @(posedge clk) if (we && wa != 0) mem[wa] <= wd;
+ assign rd1 = (ra1 == 0) ? 32'b0 : mem[ra1];
+ assign rd2 = (ra2 == 0) ? 32'b0 : mem[ra2];
+endmodule
+// ---- Instruction memory (256 words, async read) ----------------------------
+module rv_imem (input wire [31:0] addr, output wire [31:0] instr);
+ reg [31:0] mem [0:255];
+ integer k; initial for (k=0;k<256;k=k+1) mem[k] = 32'h0000_0013; // NOP (addi x0,x0,0)
+ assign instr = mem[addr[9:2]];
+endmodule
+// ---- Data memory (256 words, async read, sync write) -------------------------
+module rv_dmem (input wire clk, we, input wire [31:0] addr, wdata, output wire [31:0] rdata);
+ reg [31:0] mem [0:255];
+ integer k; initial for (k=0;k<256;k=k+1) mem[k] = 0;
+ always @(posedge clk) if (we) mem[addr[9:2]] <= wdata;
+ assign rdata = mem[addr[9:2]];
+endmodule
+// ---- Top: control + datapath ---------------------------------------------------
+module rv_cpu (input wire clk, rst);
+ reg [31:0] pc;
+ wire [31:0] instr;
+ rv_imem u_imem (.addr(pc), .instr(instr));
+ wire [6:0] opcode = instr[6:0];
+ wire [4:0] rd = instr[11:7], rs1 = instr[19:15], rs2 = instr[24:20];
+ wire [2:0] f3 = instr[14:12];
+ wire f7b5 = instr[30];
+ // immediate generator
+ wire [31:0] imm_i = {{20{instr[31]}}, instr[31:20]};
+ wire [31:0] imm_s = {{20{instr[31]}}, instr[31:25], instr[11:7]};
+ wire [31:0] imm_b = {{19{instr[31]}}, instr[31], instr[7], instr[30:25], instr[11:8], 1'b0};
+ wire [31:0] imm_u = {instr[31:12], 12'b0};
+ wire [31:0] imm_j = {{11{instr[31]}}, instr[31], instr[19:12], instr[20], instr[30:21], 1'b0};
+ localparam OP_R=7'b0110011, OP_I=7'b0010011, OP_LW=7'b0000011, OP_SW=7'b0100011,
+ OP_B=7'b1100011, OP_JAL=7'b1101111, OP_JALR=7'b1100111, OP_LUI=7'b0110111, OP_AUIPC=7'b0010111;
+ // ---- control unit -----------------------------------------------------------
+ reg reg_we, mem_we, b_imm, is_branch, is_jal, is_jalr;
+ reg [1:0] a_sel; // 0 rs1, 1 pc, 2 zero
+ reg [1:0] wb_sel; // 0 alu, 1 mem, 2 pc+4
+ reg [31:0] imm;
+ reg [3:0] alu_op;
+ reg [3:0] funct_op; // ALU op decoded from funct3/funct7
+ always @* begin
+ case (f3)
+ 3'b000: funct_op = (opcode==OP_R && f7b5) ? 4'd1 : 4'd0; // SUB / ADD
+ 3'b001: funct_op = 4'd5; // SLL
+ 3'b010: funct_op = 4'd8; // SLT
+ 3'b011: funct_op = 4'd9; // SLTU
+ 3'b100: funct_op = 4'd4; // XOR
+ 3'b101: funct_op = f7b5 ? 4'd7 : 4'd6; // SRA / SRL
+ 3'b110: funct_op = 4'd3; // OR
+ 3'b111: funct_op = 4'd2; // AND
+ endcase
+ end
+ always @* begin
+ reg_we=0; mem_we=0; b_imm=0; is_branch=0; is_jal=0; is_jalr=0;
+ a_sel=0; wb_sel=0; imm=imm_i; alu_op=4'd0;
+ case (opcode)
+ OP_R: begin reg_we=1; alu_op=funct_op; end
+ OP_I: begin reg_we=1; b_imm=1; imm=imm_i; alu_op=funct_op; end
+ OP_LW: begin reg_we=1; b_imm=1; imm=imm_i; wb_sel=1; end
+ OP_SW: begin mem_we=1; b_imm=1; imm=imm_s; end
+ OP_B: begin is_branch=1; end
+ OP_JAL: begin reg_we=1; is_jal=1; wb_sel=2; end
+ OP_JALR: begin reg_we=1; is_jalr=1; b_imm=1; imm=imm_i; wb_sel=2; end
+ OP_LUI: begin reg_we=1; b_imm=1; imm=imm_u; a_sel=2; end
+ OP_AUIPC:begin reg_we=1; b_imm=1; imm=imm_u; a_sel=1; end
+ default: ; // unknown opcode -> behaves as NOP
+ endcase
+ end
+ // ---- datapath ------------------------------------------------------------------
+ wire [31:0] rs1_d, rs2_d, wb_data, alu_y, dmem_rd;
+ wire [31:0] alu_a = (a_sel==0) ? rs1_d : (a_sel==1) ? pc : 32'b0;
+ wire [31:0] alu_b = b_imm ? imm : rs2_d;
+ rv_alu u_alu (.a(alu_a), .b(alu_b), .op(alu_op), .y(alu_y));
+ rv_regfile u_rf (.clk(clk), .we(reg_we), .ra1(rs1), .ra2(rs2), .wa(rd), .wd(wb_data), .rd1(rs1_d), .rd2(rs2_d));
+ rv_dmem u_dmem (.clk(clk), .we(mem_we), .addr(alu_y), .wdata(rs2_d), .rdata(dmem_rd));
+ wire [31:0] pc4 = pc + 32'd4;
+ assign wb_data = (wb_sel==0) ? alu_y : (wb_sel==1) ? dmem_rd : pc4;
+ // branch comparator
+ wire eq = (rs1_d == rs2_d);
+ wire lt = ($signed(rs1_d) < $signed(rs2_d));
+ wire ltu = (rs1_d < rs2_d);
+ reg take;
+ always @* begin
+ case (f3)
+ 3'b000: take = eq; 3'b001: take = ~eq;
+ 3'b100: take = lt; 3'b101: take = ~lt;
+ 3'b110: take = ltu; 3'b111: take = ~ltu;
+ default: take = 1'b0;
+ endcase
+ end
+ wire [31:0] next_pc = (is_branch && take) ? pc + imm_b :
+ is_jal ? pc + imm_j :
+ is_jalr ? (alu_y & 32'hFFFF_FFFE) : pc4;
+ always @(posedge clk) pc <= rst ? 32'b0 : next_pc;
+endmodu

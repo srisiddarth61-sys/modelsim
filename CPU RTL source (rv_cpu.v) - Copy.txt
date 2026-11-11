@@ -1,0 +1,70 @@
+`timescale 1ns/1ps
+// Self-checking testbench: for each program -> load imem, reset, run until the CPU
+// branches to itself (halt), then compare x1..x31 and dmem[0..63] with the ISS-generated .exp file.
+module rv_cpu_tb;
+ reg clk = 0, rst = 1;
+ rv_cpu dut (.clk(clk), .rst(rst));
+ always #5 clk = ~clk;
+ // probes (top-level wires so they show up in the VCD)
+ wire [31:0] pc = dut.pc;
+ wire [31:0] instr = dut.instr;
+ wire [31:0] alu_y = dut.alu_y;
+ wire reg_we = dut.reg_we;
+ wire [4:0] rd = dut.rd;
+ wire [31:0] wb_data = dut.wb_data;
+ wire mem_we = dut.mem_we;
+ wire [31:0] rs1_d = dut.rs1_d;
+ wire [31:0] rs2_d = dut.rs2_d;
+ reg [31:0] expect_mem [0:95]; // 32 registers followed by 64 data words
+ integer total_errors = 0, prog_errors, cyc, i, f, nprog = 0, nfail = 0;
+ reg [31:0] pc_last; reg halted;
+ string hexf, expf, trcf;
+ task run_prog(input string name);
+ begin
+ hexf = {"prog/", name, ".hex"}; expf = {"prog/", name, ".exp"}; trcf = {"prog/", name, ".trace"};
+ // clean state, load program + expected image
+ for (i = 0; i < 256; i = i + 1) begin dut.u_dmem.mem[i] = 0; end
+ for (i = 0; i < 32; i = i + 1) begin dut.u_rf.mem[i] = 0; end
+ $readmemh(hexf, dut.u_imem.mem);
+ $readmemh(expf, expect_mem);
+ f = $fopen(trcf, "w");
+ rst = 1; @(negedge clk); @(negedge clk); rst = 0;
+ cyc = 0; halted = 0; pc_last = 32'hFFFF_FFFF;
+ while (!halted && cyc < 20000) begin
+ // pc/instr are stable here (negedge, after the previous posedge)
+ $fdisplay(f, "%0d %h %h %h %b %0d %h %b", cyc, pc, instr, alu_y, reg_we, rd, wb_data, mem_we);
+ if (pc === pc_last) halted = 1; // jal x0,0 : pc did not advance
+ pc_last = pc;
+ if (!halted) begin @(negedge clk); cyc = cyc + 1; end
+ end
+ $fclose(f);
+ prog_errors = 0;
+ if (!halted) begin prog_errors = prog_errors + 1; $display(" %s: TIMEOUT (no halt)", name); end
+ for (i = 1; i < 32; i = i + 1)
+ if (dut.u_rf.mem[i] !== expect_mem[i]) begin
+ prog_errors = prog_errors + 1;
+ $display(" %s: x%0d = %h, expected %h", name, i, dut.u_rf.mem[i], expect_mem[i]);
+ end
+ for (i = 0; i < 64; i = i + 1)
+ if (dut.u_dmem.mem[i] !== expect_mem[32+i]) begin
+ prog_errors = prog_errors + 1;
+ $display(" %s: mem[%0d] = %h, expected %h", name, i, dut.u_dmem.mem[i], expect_mem[32+i]);
+ end
+ nprog = nprog + 1; if (prog_errors != 0) nfail = nfail + 1;
+ total_errors = total_errors + prog_errors;
+ $display("%-14s halted after %0d cycles (CPI=1 => %0d instructions), %0d mismatches -> %s",
+ name, cyc, cyc, prog_errors, prog_errors == 0 ? "PASS" : "FAIL");
+ end
+ endtask
+ initial begin
+ $dumpfile("cpu.vcd"); $dumpvars(0, rv_cpu_tb);
+ run_prog("prog_sum");
+ run_prog("prog_fib");
+ run_prog("prog_fact");
+ run_prog("prog_minmax");
+ run_prog("prog_alu_all");
+ $display("CPU TESTBENCH: %0d programs, %0d failed, %0d total mismatches -> %s",
+ nprog, nfail, total_errors, total_errors == 0 ? "PASS" : "FAIL");
+ $finish;
+ end
+endmodule

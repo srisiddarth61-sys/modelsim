@@ -1,0 +1,173 @@
+Source: prog_sum.s
+# Sum of 1..10 -> x10 = 55, mem[0] = 55
+ li x1, 0 # sum
+ li x2, 1 # i
+ li x3, 10 # limit
+loop: add x1, x1, x2 # sum += i
+ addi x2, x2, 1 # i++
+ bge x3, x2, loop # while (limit >= i)
+ sw x1, 0(x0)
+ mv x10, x1
+end: halt
+Source: prog_fib.s
+# Fibonacci F0..F10 stored to mem[0..10]; x10 = F10 = 55
+ li x1, 0 # F(n-2)
+ li x2, 1 # F(n-1)
+ li x5, 0 # byte offset
+ li x6, 11 # count
+ li x7, 0 # i
+loop: sw x1, 0(x5) # mem[i] = F(i)
+ add x3, x1, x2 # next
+ mv x1, x2
+ mv x2, x3
+ addi x5, x5, 4
+ addi x7, x7, 1
+ blt x7, x6, loop
+ lw x10, 40(x0) # F10
+end: halt
+Source: prog_fact.s
+# Factorial of 5 using multiplication by repeated addition (no MUL instruction)
+# x10 = 120, mem[0] = 120
+ li x1, 5 # n
+ li x2, 1 # result
+outer: beq x1, x0, done
+ li x3, 0 # product accumulator
+ mv x4, x1 # counter = n
+inner: add x3, x3, x2 # product += result (result * n)
+ addi x4, x4, -1
+ bne x4, x0, inner
+ mv x2, x3
+ addi x1, x1, -1
+ j outer
+done: sw x2, 0(x0)
+ mv x10, x2
+end: halt
+Source: prog_minmax.s
+# Max and min of array {3, 17, -5, 42, 8}. Array at mem[16..20]; max -> mem[0] and x10, min -> mem[1] and x11
+ li x1, 3
+ sw x1, 64(x0)
+ li x1, 17
+ sw x1, 68(x0)
+ li x1, -5
+ sw x1, 72(x0)
+ li x1, 42
+ sw x1, 76(x0)
+ li x1, 8
+ sw x1, 80(x0)
+ li x5, 64 # pointer
+ li x6, 84 # end pointer
+ lw x10, 0(x5) # max = a[0]
+ mv x11, x10 # min = a[0]
+ addi x5, x5, 4
+scan: bge x5, x6, fin
+ lw x7, 0(x5)
+ bge x10, x7, nomax
+ mv x10, x7
+nomax: bge x7, x11, nomin
+ mv x11, x7
+nomin: addi x5, x5, 4
+ j scan
+fin: sw x10, 0(x0)
+ sw x11, 4(x0)
+end: halt
+Source: prog_alu_all.s
+# Exercises every implemented instruction; results stored to mem[0..] (expected values from the ISS)
+ li x1, 100
+ li x2, -7
+ li x3, 0x0F0F
+ li x4, 5
+ add x5, x1, x2
+ sw x5, 0(x0)
+ sub x6, x1, x2
+ sw x6, 4(x0)
+ and x7, x1, x3
+ sw x7, 8(x0)
+ or x8, x1, x3
+ sw x8, 12(x0)
+ xor x9, x1, x3
+ sw x9, 16(x0)
+ sll x10, x1, x4
+ sw x10, 20(x0)
+ srl x11, x2, x4
+ sw x11, 24(x0)
+ sra x12, x2, x4
+ sw x12, 28(x0)
+ slt x13, x2, x1
+ sw x13, 32(x0)
+ sltu x14, x2, x1
+ sw x14, 36(x0)
+ slt x15, x1, x2
+ sw x15, 40(x0)
+ addi x16, x1, -1
+ sw x16, 44(x0)
+ andi x17, x3, 0xFF
+ sw x17, 48(x0)
+ ori x18, x3, 0x70
+ sw x18, 52(x0)
+ xori x19, x3, -1
+ sw x19, 56(x0)
+ slti x21, x2, 0
+ sw x21, 60(x0)
+ sltiu x22, x2, 1
+ sw x22, 64(x0)
+ slli x23, x1, 3
+ sw x23, 68(x0)
+ srli x24, x2, 28
+ sw x24, 72(x0)
+ srai x25, x2, 1
+ sw x25, 76(x0)
+ lui x26, 0xABCDE
+ sw x26, 80(x0)
+ auipc x27, 1
+ sw x27, 84(x0)
+ lw x31, 0(x0) # load back the first stored result
+ # ---- branches: taken
+ li x28, 0
+ beq x1, x1, t1
+ addi x28, x28, 1000
+t1: addi x28, x28, 1
+ bne x1, x2, t2
+ addi x28, x28, 1000
+t2: addi x28, x28, 2
+ blt x2, x1, t3
+ addi x28, x28, 1000
+t3: addi x28, x28, 4
+ bge x1, x2, t4
+ addi x28, x28, 1000
+t4: addi x28, x28, 8
+ bltu x1, x2, t5
+ addi x28, x28, 1000
+t5: addi x28, x28, 16
+ bgeu x2, x1, t6
+ addi x28, x28, 1000
+t6: addi x28, x28, 32
+ # ---- branches: not taken
+ beq x1, x2, bad
+ bne x1, x1, bad
+ blt x1, x2, bad
+ bge x2, x1, bad
+ bltu x2, x1, bad
+ bgeu x1, x2, bad
+ addi x28, x28, 64
+ j jtest
+bad: addi x28, x28, 1500
+ # ---- jal / jalr
+jtest: jal x29, sub1 # x29 = return address
+ addi x30, x30, 1 # executes after return
+ j fin
+sub1: addi x30, x0, 10
+ jalr x0, x29, 0 # return
+fin: sw x28, 88(x0)
+ sw x29, 92(x0)
+ sw x30, 96(x0)
+ # ---- jalr must clear bit 0 of the target: (x6+9)&~1 = x6+8, skipping one instruction
+ jal x6, nxt # x6 = address of nxt
+nxt: jalr x7, x6, 9 # target has bit0 set; hardware must clear it
+ addi x30, x30, 100 # must be skipped
+ addi x30, x30, 5
+ addi x30, x30, 7
+ auipc x8, 0 # captures pc: exposes an odd (bit0 set) pc if JALR failed to clear it
+ sw x8, 108(x0)
+ sw x7, 100(x0) # return address (nxt+4)
+ sw x30, 104(x0)
+end: 
