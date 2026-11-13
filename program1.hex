@@ -1,0 +1,23 @@
+// Program 1: Sum of 1 to N (N = 5)
+// Registers used: x1 = N (counter), x2 = Sum (accumulator)
+
+// 0: ADDI x1, x0, 5      -> x1 = 5
+00500093
+
+// 4: ADDI x2, x0, 0      -> x2 = 0
+00000113
+
+// 8: BEQ x1, x0, +16     -> If x1 == 0, branch to end (PC + 16)
+00008863
+
+// 12: ADD x2, x2, x1     -> Sum = Sum + N
+00110133
+
+// 16: ADDI x1, x1, -1    -> N = N - 1
+FFF08093
+
+// 20: JAL x0, -12        -> Jump back to loop start (PC - 12)
+FF5FF06F
+
+// 24: JAL x0, 0          -> Infinite loop to end program (PC + 0)
+0000006F
